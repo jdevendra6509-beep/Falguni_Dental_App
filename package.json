@@ -1,0 +1,16 @@
+{
+  "name": "falguni-dental-app",
+  "version": "1.0.0",
+  "description": "Mobile-friendly dental clinic app: patient records, visit history, appointments and accounts receivable.",
+  "main": "server.js",
+  "private": true,
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning server.js",
+    "dev": "node --disable-warning=ExperimentalWarning --watch server.js",
+    "test": "node --disable-warning=ExperimentalWarning --test \"test/**/*.test.js\""
+  },
+  "license": "UNLICENSED"
+}
