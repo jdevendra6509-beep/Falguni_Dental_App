@@ -1,16 +1,16 @@
 {
   "name": "falguni-dental-app",
   "version": "1.0.0",
-  "description": "Mobile-friendly dental clinic app: patient records, visit history, appointments and accounts receivable.",
-  "main": "server.js",
+  "description": "Mobile-friendly dental clinic app on Google Sheets: patient records, visit history, appointments and accounts receivable.",
+  "main": "apps-script/Code.gs",
   "private": true,
   "engines": {
-    "node": ">=22.13"
+    "node": ">=20"
   },
   "scripts": {
-    "start": "node --disable-warning=ExperimentalWarning server.js",
-    "dev": "node --disable-warning=ExperimentalWarning --watch server.js",
-    "test": "node --disable-warning=ExperimentalWarning --test \"test/**/*.test.js\""
+    "build": "node scripts/build.js",
+    "dev": "node scripts/build.js && node dev/server.js",
+    "test": "node --test \"test/**/*.test.js\""
   },
   "license": "UNLICENSED"
 }

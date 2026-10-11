@@ -35,12 +35,11 @@ const ICON = {
   chart: '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
   gear: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>',
   download: '<path d="M12 3v12M7 10l5 5 5-5M4 21h16"/>',
-  lock: '<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>',
-  logout: '<path d="M15 4h4a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-4M10 17l-5-5 5-5M5 12h11"/>',
   chevron: '<path d="M9 6l6 6-6 6"/>',
   check: '<path d="M5 12l5 5L20 7"/>',
   x: '<path d="M6 6l12 12M18 6L6 18"/>',
   clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  sheet: '<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M4 9h16M4 15h16M10 9v12"/>',
   file: '<path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8z"/><path d="M14 3v5h5M9 13h6M9 17h6"/>',
 };
 const icon = (name) => `<svg viewBox="0 0 24 24">${ICON[name]}</svg>`;
@@ -112,7 +111,7 @@ function contactButtons(phone, waText) {
   if (!phone) return '';
   const wa = waLink(phone, waText || '');
   return `<div class="pill-actions">
-    <a href="tel:${esc(phone)}" aria-label="Call">${icon('phone')}</a>
+    <a href="tel:${esc(phone)}" target="_top" aria-label="Call">${icon('phone')}</a>
     ${wa ? `<a class="wa" href="${esc(wa)}" target="_blank" rel="noopener" aria-label="WhatsApp">${icon('wa')}</a>` : ''}
   </div>`;
 }
@@ -127,21 +126,19 @@ function apptText(a) {
 }
 
 /* ---------------- api ---------------- */
-async function api(method, url, body) {
-  const opts = { method, headers: {}, credentials: 'same-origin' };
-  if (body !== undefined) {
-    opts.headers['Content-Type'] = 'application/json';
-    opts.body = JSON.stringify(body);
-  }
-  const sep = url.includes('?') ? '&' : '?';
-  const res = await fetch(`${url}${method === 'GET' ? `${sep}today=${todayStr()}` : ''}`, opts);
-  const data = await res.json().catch(() => ({}));
-  if (res.status === 401 && !url.startsWith('/api/login')) {
-    location.hash = '#/login';
-    throw new Error(data.error || 'Please log in');
-  }
-  if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
-  return data;
+// Every call goes to api() in Code.gs through google.script.run; data lives in the Google Sheet.
+function api(method, url, body) {
+  const full = `${url}${url.includes('?') ? '&' : '?'}today=${todayStr()}`;
+  return new Promise((resolve, reject) => {
+    google.script.run
+      .withSuccessHandler((text) => {
+        const res = JSON.parse(text);
+        if (res.ok) resolve(res.data);
+        else reject(new Error(res.error || `Request failed (${res.status})`));
+      })
+      .withFailureHandler((err) => reject(new Error((err && err.message) || 'Could not reach Google. Check your internet connection.')))
+      .api(method, full, body === undefined ? null : body);
+  });
 }
 
 /* ---------------- ui helpers ---------------- */
@@ -211,6 +208,30 @@ function wireChipGroups(root) {
   });
 }
 
+/** In-app replacement for confirm(); browser dialogs can be blocked inside Apps Script pages. */
+function askConfirm(message, { ok = 'Delete', danger = true, cancel = 'Cancel' } = {}) {
+  const m = $('#modal');
+  m.innerHTML = `<div class="sheet" role="dialog" aria-modal="true">
+    <p>${esc(message)}</p>
+    <div class="btn-row"><button class="btn secondary" data-a="no">${esc(cancel)}</button><button class="btn ${danger ? 'danger-solid' : ''}" data-a="yes">${esc(ok)}</button></div>
+  </div>`;
+  m.hidden = false;
+  return new Promise((resolve) => {
+    m.onclick = (e) => {
+      const b = e.target.closest('[data-a]');
+      if (!b && e.target !== m) return;
+      m.hidden = true;
+      m.onclick = null;
+      resolve(!!b && b.dataset.a === 'yes');
+    };
+  });
+}
+
+/** Runs an action from a button, showing any error as a toast. */
+async function act(fn) {
+  try { await fn(); } catch (e) { toast(e.message, true); }
+}
+
 const spinner = () => { view.innerHTML = '<div class="spinner"></div>'; };
 
 /* ---------------- router ---------------- */
@@ -228,7 +249,7 @@ async function router() {
       try {
         await fn(query, ...m.slice(1));
       } catch (err) {
-        if (location.hash !== '#/login') view.innerHTML = `<div class="card empty">${esc(err.message)}</div>`;
+        view.innerHTML = `<div class="card empty">${esc(err.message)}</div>`;
       }
       return;
     }
@@ -241,41 +262,23 @@ async function router() {
    ====================================================================== */
 const LOGO = '<svg class="logo" viewBox="0 0 64 64"><rect width="64" height="64" rx="16" fill="#0f766e" stroke="none"/><path d="M22 14c-5 0-8 4-8 9 0 6 3 9 4 14 1 6 2 13 6 13s4-8 8-8 4 8 8 8 5-7 6-13c1-5 4-8 4-14 0-5-3-9-8-9-4 0-6 2-10 2s-6-2-10-2z" fill="#fff" stroke="none"/></svg>';
 
-on(/^\/login$/, async () => {
-  const s = await api('GET', '/api/status');
-  if (s.authenticated) { location.hash = '#/'; return; }
+on(/^\/welcome$/, async () => {
+  const s = state.settings;
   setChrome({ title: s.clinic_name || 'Dental Clinic', nav: false });
-  if (s.setup_required) {
-    view.innerHTML = `<div class="auth">
-      ${LOGO}
-      <h2>Welcome!</h2>
-      <p class="muted">Set up your clinic in 10 seconds.</p>
-      <form class="form" id="f">
-        <div class="field"><label>Clinic name</label><input name="clinic_name" value="${esc(s.clinic_name)}" required></div>
-        <div class="field"><label>Doctor's name</label><input name="doctor_name" placeholder="Dr. ..."></div>
-        <div class="field"><label>Choose a password / PIN</label><input name="password" type="password" minlength="4" required autocomplete="new-password" inputmode="text"></div>
-        <button class="btn block" type="submit">Start</button>
-      </form></div>`;
-    bindSubmit($('#f'), async (d) => {
-      await api('POST', '/api/setup', d);
-      await loadSettings();
-      location.hash = '#/';
-    });
-  } else {
-    view.innerHTML = `<div class="auth">
-      ${LOGO}
-      <h2>${esc(s.clinic_name)}</h2>
-      <p class="muted">Enter your password to continue</p>
-      <form class="form" id="f">
-        <div class="field"><input name="password" type="password" placeholder="Password" required autofocus autocomplete="current-password"></div>
-        <button class="btn block" type="submit">Log in</button>
-      </form></div>`;
-    bindSubmit($('#f'), async (d) => {
-      await api('POST', '/api/login', d);
-      await loadSettings();
-      location.hash = '#/';
-    });
-  }
+  view.innerHTML = `<div class="auth">
+    ${LOGO}
+    <h2>Welcome!</h2>
+    <p class="muted">Set up your clinic in 10 seconds. Everything you enter is saved in your Google Sheet.</p>
+    <form class="form" id="f">
+      <div class="field"><label>Clinic name</label><input name="clinic_name" value="${esc(s.clinic_name)}" required></div>
+      <div class="field"><label>Doctor's name</label><input name="doctor_name" value="${esc(s.doctor_name)}" placeholder="Dr. ..."></div>
+      <div class="field"><label>Clinic phone</label><input name="clinic_phone" type="tel" value="${esc(s.clinic_phone)}"></div>
+      <button class="btn block" type="submit">Start</button>
+    </form></div>`;
+  bindSubmit($('#f'), async (d) => {
+    state.settings = await api('PUT', '/api/settings', { ...d, setup_done: 'yes' });
+    location.replace('#/');
+  });
 });
 
 async function loadSettings() {
@@ -482,12 +485,12 @@ on(/^\/patients\/(\d+)\/edit$/, async (_q, id) => {
     toast('Saved');
     goBack(`#/patients/${id}`);
   });
-  $('#del').addEventListener('click', async () => {
-    if (!confirm(`Delete ${patient.name} and ALL their visits, payments and appointments? This cannot be undone.`)) return;
+  $('#del').addEventListener('click', () => act(async () => {
+    if (!await askConfirm(`Delete ${patient.name} and ALL their visits, payments and appointments? This cannot be undone.`)) return;
     await api('DELETE', `/api/patients/${id}`);
     toast('Patient deleted');
     location.replace('#/patients');
-  });
+  }));
 });
 
 on(/^\/patients\/(\d+)$/, async (_q, id) => {
@@ -677,12 +680,12 @@ on(/^\/patients\/(\d+)\/visits\/(new|\d+)$/, async (_q, id, vid) => {
     location.replace(`#/patients/${id}`);
   });
   if (!isNew) {
-    $('#del').addEventListener('click', async () => {
-      if (!confirm('Delete this visit? Its fee will be removed from the bill.')) return;
+    $('#del').addEventListener('click', () => act(async () => {
+      if (!await askConfirm('Delete this visit? Its fee will be removed from the bill.')) return;
       await api('DELETE', `/api/visits/${vid}`);
       toast('Visit deleted');
       location.replace(`#/patients/${id}`);
-    });
+    }));
   }
 });
 
@@ -721,12 +724,12 @@ on(/^\/patients\/(\d+)\/payments\/(new|\d+)$/, async (_q, id, payId) => {
     toast(`Payment of ${money(d.amount)} saved`);
     location.replace(`#/patients/${id}`);
   });
-  $('#del')?.addEventListener('click', async () => {
-    if (!confirm('Delete this payment?')) return;
+  $('#del')?.addEventListener('click', () => act(async () => {
+    if (!await askConfirm('Delete this payment?')) return;
     await api('DELETE', `/api/payments/${payId}`);
     toast('Payment deleted');
     location.replace(`#/patients/${id}`);
-  });
+  }));
 });
 
 /* ---------------- statement (printable) ---------------- */
@@ -854,17 +857,17 @@ on(/^\/appointments\/(new|\d+)$/, async (q, aid) => {
     else await api('PUT', `/api/appointments/${aid}`, d);
     state.apptDate = d.date;
     toast(isNew ? 'Appointment booked' : 'Saved');
-    if (isNew && patient.phone && confirm('Send a WhatsApp confirmation to the patient?')) {
+    if (isNew && patient.phone && await askConfirm('Send a WhatsApp confirmation to the patient?', { ok: 'Send on WhatsApp', cancel: 'No', danger: false })) {
       window.open(waLink(patient.phone, apptText({ ...d, patient_name: patient.name })), '_blank', 'noopener');
     }
     goBack('#/appointments');
   });
-  $('#del')?.addEventListener('click', async () => {
-    if (!confirm('Delete this appointment?')) return;
+  $('#del')?.addEventListener('click', () => act(async () => {
+    if (!await askConfirm('Delete this appointment?')) return;
     await api('DELETE', `/api/appointments/${aid}`);
     toast('Deleted');
     goBack('#/appointments');
-  });
+  }));
 });
 
 async function findAppointment(id) {
@@ -876,7 +879,8 @@ async function findAppointment(id) {
    Dues (accounts receivable)
    ====================================================================== */
 on(/^\/dues$/, async () => {
-  setChrome({ title: 'Dues (Receivables)', tab: 'dues', actions: `<a class="icon-btn" href="/api/export/receivables.csv?today=${todayStr()}" aria-label="Export CSV">${icon('download')}</a>` });
+  setChrome({ title: 'Dues (Receivables)', tab: 'dues', actions: `<button class="icon-btn" id="tosheet" aria-label="Save dues report to Google Sheet">${icon('sheet')}</button>` });
+  $('#tosheet').addEventListener('click', saveDuesToSheet);
   spinner();
   const ar = await api('GET', '/api/receivables');
   const t = ar.totals;
@@ -935,32 +939,30 @@ on(/^\/dues$/, async () => {
 /* ======================================================================
    More / reports / settings
    ====================================================================== */
+async function saveDuesToSheet() {
+  await act(async () => {
+    toast('Saving dues report…');
+    const r = await api('POST', '/api/receivables/sheet', {});
+    toast(`Saved ${r.rows} patient${r.rows === 1 ? '' : 's'} to the “Dues Report” tab`);
+  });
+}
+
 on(/^\/more$/, async () => {
   setChrome({ title: 'More', tab: 'more' });
-  const t = todayStr();
   const link = (href, ic, title, sub, attrs = '') => `<a class="item" href="${href}" ${attrs}><div class="avatar">${icon(ic)}</div><div class="grow"><div class="title">${title}</div>${sub ? `<div class="sub">${sub}</div>` : ''}</div>${icon('chevron')}</a>`;
   view.innerHTML = `
     <div class="list">
       ${link('#/reports', 'chart', 'Reports', 'Collections, billing, payment modes')}
       ${link('#/settings', 'gear', 'Clinic settings', 'Name, address, currency, reminder message')}
-      ${link('#/password', 'lock', 'Change password')}
     </div>
-    <div class="section-title"><span>Your data</span></div>
+    <div class="section-title"><span>Your data (Google Sheets)</span></div>
     <div class="list">
-      ${link(`/api/backup`, 'download', 'Download full backup', 'Keep a copy safe (Google Drive, email, pen drive)', 'download')}
-      ${link(`/api/export/patients.csv?today=${t}`, 'file', 'Export patients (Excel/CSV)', '', 'download')}
-      ${link(`/api/export/visits.csv?today=${t}`, 'file', 'Export visits & treatments', '', 'download')}
-      ${link(`/api/export/payments.csv?today=${t}`, 'file', 'Export payments', '', 'download')}
-      ${link(`/api/export/receivables.csv?today=${t}`, 'file', 'Export dues / receivables', '', 'download')}
+      ${link(esc(state.settings.spreadsheet_url || '#'), 'sheet', 'Open the Google Sheet', 'All patients, visits, payments and appointments', 'target="_blank" rel="noopener"')}
+      <button class="item" id="dues-sheet" style="width:100%;border-left:0;border-right:0;border-top:0;background:none;font:inherit;text-align:left;cursor:pointer"><div class="avatar">${icon('download')}</div><div class="grow"><div class="title">Save dues report to the sheet</div><div class="sub">Writes the current dues list into a “Dues Report” tab</div></div></button>
     </div>
-    <div class="section-title"><span>&nbsp;</span></div>
-    <div class="list"><a class="item" href="#" id="logout"><div class="avatar" style="background:var(--danger-soft);color:var(--danger)">${icon('logout')}</div><div class="grow title">Log out</div></a></div>
-    <p class="muted small center mt">Tip: open this app in Chrome/Safari and choose “Add to Home Screen” to use it like a mobile app.</p>`;
-  $('#logout').addEventListener('click', async (e) => {
-    e.preventDefault();
-    await api('POST', '/api/logout', {});
-    location.hash = '#/login';
-  });
+    <p class="muted small center mt">Google keeps your data safe and keeps version history.<br>In the sheet use File → Download → Excel for an offline copy.</p>
+    <p class="muted small center">Tip: open this app in Chrome/Safari and choose “Add to Home Screen” to open it like an app.</p>`;
+  $('#dues-sheet').addEventListener('click', saveDuesToSheet);
 });
 
 on(/^\/reports$/, async (q) => {
@@ -1032,20 +1034,6 @@ on(/^\/settings$/, async () => {
   });
 });
 
-on(/^\/password$/, async () => {
-  setChrome({ title: 'Change password', back: true, nav: false });
-  view.innerHTML = `<form class="form" id="f">
-    <div class="field"><label>Current password</label><input name="current" type="password" required autocomplete="current-password"></div>
-    <div class="field"><label>New password</label><input name="password" type="password" minlength="4" required autocomplete="new-password"></div>
-    <button class="btn block" type="submit">Change password</button>
-  </form>`;
-  bindSubmit($('#f'), async (d) => {
-    await api('POST', '/api/password', d);
-    toast('Password changed');
-    goBack('#/more');
-  });
-});
-
 /* ---------------- boot ---------------- */
 $('#back-btn').addEventListener('click', () => {
   const path = location.hash.slice(1).split('?')[0];
@@ -1063,17 +1051,11 @@ view.addEventListener('click', (e) => {
 
 (async function boot() {
   try {
-    const s = await api('GET', '/api/status');
-    if (!s.authenticated) {
-      history.replaceState(null, '', '#/login');
-    } else {
-      await loadSettings();
-      if (location.hash === '#/login') history.replaceState(null, '', '#/');
-    }
+    await loadSettings();
   } catch (e) {
-    view.innerHTML = `<div class="card empty">Cannot reach the clinic server.<br>${esc(e.message)}</div>`;
+    view.innerHTML = `<div class="card empty">Cannot open the clinic data.<br>${esc(e.message)}</div>`;
     return;
   }
+  if (state.settings.setup_done !== 'yes') history.replaceState(null, '', '#/welcome');
   router();
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
 })();
