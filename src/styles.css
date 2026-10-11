@@ -330,3 +330,15 @@ table.tbl .num { text-align: right; white-space: nowrap; }
 .modal .sheet p { margin: 0 0 16px; font-size: 16.5px; font-weight: 600; }
 @media (min-width: 640px) { .modal { align-items: center; } }
 .btn.danger-solid { background: var(--danger); color: #fff; }
+
+/* login role picker */
+.roles { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 14px; }
+.roles button {
+  display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 16px 8px;
+  border: 2px solid var(--line); border-radius: 14px; background: var(--surface); color: var(--text);
+  font: inherit; font-weight: 700; cursor: pointer;
+}
+.roles button svg { width: 30px; height: 30px; color: var(--muted); }
+.roles button.on { border-color: var(--primary); background: var(--primary-soft); color: var(--primary); }
+.roles button.on svg { color: var(--primary); }
+a.chip { display: inline-block; }

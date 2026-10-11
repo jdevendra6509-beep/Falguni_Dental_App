@@ -8,6 +8,7 @@
  * formatted as plain text ('@'), and a leading apostrophe forces text.
  */
 
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
@@ -112,27 +113,124 @@ class Spreadsheet {
 
 function pad(n) { return String(n).padStart(2, '0'); }
 
+// The mock keeps everything in the machine's local time zone.
 function formatDate(d, _tz, pattern) {
-  // The mock keeps everything in the machine's local time zone.
   const map = {
-    yyyy: d.getFullYear(), MM: pad(d.getMonth() + 1), dd: pad(d.getDate()),
+    yyyy: d.getFullYear(), MMM: d.toLocaleString('en', { month: 'short' }), MM: pad(d.getMonth() + 1),
+    dd: pad(d.getDate()), d: d.getDate(), EEE: d.toLocaleString('en', { weekday: 'short' }),
     HH: pad(d.getHours()), mm: pad(d.getMinutes()), ss: pad(d.getSeconds()),
   };
-  return pattern.replace(/yyyy|MM|dd|HH|mm|ss/g, (k) => map[k]);
+  return pattern.replace(/yyyy|MMM|MM|dd|d|EEE|HH|mm|ss/g, (k) => map[k]);
+}
+
+function parseDate(str, _tz, pattern) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})(?: (\d{2}):(\d{2}))?$/.exec(str);
+  if (!m || (pattern.includes('HH') !== !!m[4])) throw new Error(`Unparseable date "${str}" for ${pattern}`);
+  return new Date(+m[1], m[2] - 1, +m[3], +(m[4] || 0), +(m[5] || 0));
+}
+
+class CalendarEventMock {
+  constructor(cal, id, title, start, end, opts, allDay) {
+    Object.assign(this, { cal, id, title, start, end, opts, allDay, reminders: [] });
+  }
+  getId() { return this.id; }
+  getTitle() { return this.title; }
+  deleteEvent() { this.cal.events.delete(this.id); }
+  removeAllReminders() { this.reminders = []; }
+  addPopupReminder(min) { this.reminders.push(min); }
+}
+
+class CalendarMock {
+  constructor(id, name) { Object.assign(this, { id, name, events: new Map(), seq: 0 }); }
+  getId() { return this.id; }
+  getName() { return this.name; }
+  getEventById(id) { return this.events.get(id) || null; }
+  createEvent(title, start, end, opts = {}) {
+    if (!(end > start)) throw new Error('Event end must be after start');
+    const ev = new CalendarEventMock(this, `ev${++this.seq}@google.com`, title, start, end, opts, false);
+    this.events.set(ev.id, ev);
+    return ev;
+  }
+  createAllDayEvent(title, day, opts = {}) {
+    const ev = new CalendarEventMock(this, `ev${++this.seq}@google.com`, title, day, null, opts, true);
+    this.events.set(ev.id, ev);
+    return ev;
+  }
+}
+
+function makeServices() {
+  const calendars = new Map();
+  const props = new Map();
+  const cache = new Map();
+  const mail = [];
+  const triggers = [];
+  return {
+    calendars, props, mail, triggers,
+    CalendarApp: {
+      Color: { TEAL: 'teal' },
+      getCalendarById: (id) => calendars.get(id) || null,
+      createCalendar: (name) => {
+        const c = new CalendarMock(`cal${calendars.size + 1}@group.calendar.google.com`, name);
+        calendars.set(c.id, c);
+        return c;
+      },
+    },
+    MailApp: {
+      sendEmail: (msg) => { mail.push(msg); },
+      getRemainingDailyQuota: () => 100 - mail.length,
+    },
+    ScriptApp: {
+      getProjectTriggers: () => triggers.slice(),
+      deleteTrigger: (t) => triggers.splice(triggers.indexOf(t), 1),
+      newTrigger: (fn) => {
+        const t = { fn, getHandlerFunction: () => fn };
+        const b = { timeBased: () => b, everyDays: () => b, atHour: (h) => { t.hour = h; return b; }, inTimezone: () => b, create: () => { triggers.push(t); return t; } };
+        return b;
+      },
+    },
+    PropertiesService: {
+      getScriptProperties: () => ({
+        getProperty: (k) => (props.has(k) ? props.get(k) : null),
+        setProperty: (k, v) => { props.set(k, String(v)); },
+        deleteProperty: (k) => { props.delete(k); },
+        getKeys: () => [...props.keys()],
+      }),
+    },
+    CacheService: {
+      getScriptCache: () => ({
+        get: (k) => (cache.has(k) ? cache.get(k) : null),
+        put: (k, v) => { cache.set(k, String(v)); },
+        remove: (k) => { cache.delete(k); },
+      }),
+    },
+  };
 }
 
 /** Loads Code.gs into a fresh sandbox backed by a new in-memory spreadsheet. */
-function loadBackend({ spreadsheet = new Spreadsheet() } = {}) {
+function loadBackend({ spreadsheet = new Spreadsheet(), owner = 'doctor@example.com' } = {}) {
   const htmlFile = path.join(__dirname, '..', 'apps-script', 'Index.html');
+  const services = makeServices();
   const context = {
     console,
+    CalendarApp: services.CalendarApp,
+    MailApp: services.MailApp,
+    ScriptApp: services.ScriptApp,
+    PropertiesService: services.PropertiesService,
+    CacheService: services.CacheService,
     SpreadsheetApp: {
       getActiveSpreadsheet: () => spreadsheet,
       getUi: () => ({ createMenu: () => ({ addItem() { return this; }, addToUi() {} }) }),
     },
     LockService: { getScriptLock: () => ({ waitLock() {}, releaseLock() {} }) },
-    Session: { getScriptTimeZone: () => 'Asia/Kolkata' },
-    Utilities: { formatDate },
+    Session: { getScriptTimeZone: () => 'Asia/Kolkata', getEffectiveUser: () => ({ getEmail: () => owner }) },
+    Utilities: {
+      formatDate,
+      parseDate,
+      getUuid: () => crypto.randomUUID(),
+      DigestAlgorithm: { SHA_256: 'sha256' },
+      // Apps Script returns signed bytes (-128..127).
+      computeDigest: (alg, value) => [...crypto.createHash(alg).update(String(value), 'utf8').digest()].map((b) => (b > 127 ? b - 256 : b)),
+    },
     HtmlService: {
       createHtmlOutputFromFile: (name) => {
         const out = {
@@ -148,7 +246,7 @@ function loadBackend({ spreadsheet = new Spreadsheet() } = {}) {
   vm.createContext(context);
   const code = fs.readFileSync(path.join(__dirname, '..', 'apps-script', 'Code.gs'), 'utf8');
   vm.runInContext(code, context, { filename: 'Code.gs' });
-  return { gas: context, spreadsheet };
+  return { gas: context, spreadsheet, services };
 }
 
 module.exports = { loadBackend, Spreadsheet };

@@ -338,6 +338,18 @@ table.tbl .num { text-align: right; white-space: nowrap; }
 .modal .sheet p { margin: 0 0 16px; font-size: 16.5px; font-weight: 600; }
 @media (min-width: 640px) { .modal { align-items: center; } }
 .btn.danger-solid { background: var(--danger); color: #fff; }
+
+/* login role picker */
+.roles { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 14px; }
+.roles button {
+  display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 16px 8px;
+  border: 2px solid var(--line); border-radius: 14px; background: var(--surface); color: var(--text);
+  font: inherit; font-weight: 700; cursor: pointer;
+}
+.roles button svg { width: 30px; height: 30px; color: var(--muted); }
+.roles button.on { border-color: var(--primary); background: var(--primary-soft); color: var(--primary); }
+.roles button.on svg { color: var(--primary); }
+a.chip { display: inline-block; }
 </style>
 </head>
 <body>
@@ -364,7 +376,7 @@ table.tbl .num { text-align: right; white-space: nowrap; }
       <svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>
       <span>Calendar</span>
     </a>
-    <a href="#/dues" data-tab="dues">
+    <a href="#/dues" data-tab="dues" id="tab4">
       <svg viewBox="0 0 24 24"><path d="M6 4h12M6 9h12M6 4c5 0 7 2 7 5s-2 5-7 5l8 7"/></svg>
       <span>Dues</span>
     </a>
@@ -390,13 +402,18 @@ const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 const view = $('#view');
 
-const state = { settings: {}, patientFilter: 'all', patientQuery: '', apptDate: null, duesSort: 'amount', patientTab: 'history' };
+const state = { settings: {}, role: null, token: null, events: null, patientFilter: 'all', patientQuery: '', apptDate: null, duesSort: 'amount', patientTab: 'history' };
+const isDoctor = () => state.role === 'doctor';
 
 const TREATMENTS = [
   'Consultation', 'Scaling & Polishing', 'Filling', 'Root Canal (RCT)', 'Extraction', 'Crown', 'Bridge',
   'Denture', 'Implant', 'Braces / Ortho', 'X-Ray (IOPA)', 'OPG', 'Teeth Whitening', 'Dressing', 'Medication',
 ];
 const PAY_METHODS = ['Cash', 'UPI', 'Card', 'Bank Transfer', 'Cheque', 'Other'];
+// Keep these lists in step with Code.gs.
+const EVENT_TYPES = ['Dental camp', 'School camp', 'Corporate check-up', 'Workshop / CDE', 'Promotion', 'Other'];
+const EXPENSE_CATEGORIES = ['Rent', 'Salary', 'Dental materials', 'Lab charges', 'Medicines', 'Equipment', 'Electricity / Utilities', 'Travel', 'Food / Refreshments', 'Printing / Marketing', 'Maintenance', 'Other'];
+const INCOME_CATEGORIES = ['Sponsorship', 'Camp fee (organiser)', 'Product sales', 'Other'];
 
 /* ---------------- icons ---------------- */
 const ICON = {
@@ -420,6 +437,15 @@ const ICON = {
   check: '<path d="M5 12l5 5L20 7"/>',
   x: '<path d="M6 6l12 12M18 6L6 18"/>',
   clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  lock: '<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>',
+  logout: '<path d="M15 4h4a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-4M10 17l-5-5 5-5M5 12h11"/>',
+  bell: '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10 21h4"/>',
+  flag: '<path d="M5 21V4M5 4h11l-2 4 2 4H5"/>',
+  receipt: '<path d="M6 3h12v18l-3-2-3 2-3-2-3 2zM9 8h6M9 12h6M9 16h3"/>',
+  trend: '<path d="M3 17l6-6 4 4 8-8M15 7h6v6"/>',
+  wallet: '<path d="M4 7h15a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1zM4 7l12-4v4M16 13h.01"/>',
+  doctor: '<circle cx="12" cy="7" r="4"/><path d="M5 21c0-4 3-7 7-7s7 3 7 7M9 14v3a3 3 0 0 0 6 0"/>',
+  assistant: '<circle cx="12" cy="7" r="4"/><path d="M4 21c0-4 4-7 8-7s8 3 8 7M12 14l-2 3h4z"/>',
   sheet: '<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M4 9h16M4 15h16M10 9v12"/>',
   file: '<path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8z"/><path d="M14 3v5h5M9 13h6M9 17h6"/>',
 };
@@ -514,12 +540,29 @@ function api(method, url, body) {
     google.script.run
       .withSuccessHandler((text) => {
         const res = JSON.parse(text);
-        if (res.ok) resolve(res.data);
-        else reject(new Error(res.error || `Request failed (${res.status})`));
+        if (res.ok) return resolve(res.data);
+        if (res.status === 401 && state.token) {
+          saveToken(null);
+          location.hash = '#/login';
+        }
+        reject(new Error(res.error || `Request failed (${res.status})`));
       })
       .withFailureHandler((err) => reject(new Error((err && err.message) || 'Could not reach Google. Check your internet connection.')))
-      .api(method, full, body === undefined ? null : body);
+      .api(method, full, body === undefined ? null : body, state.token);
   });
+}
+
+// The login token is kept on this device so staff stay logged in (for 30 days of inactivity).
+function saveToken(token) {
+  state.token = token;
+  if (!token) state.role = null;
+  try {
+    if (token) localStorage.setItem('clinic_token', token);
+    else localStorage.removeItem('clinic_token');
+  } catch (e) { /* storage blocked: stay logged in for this visit only */ }
+}
+function loadToken() {
+  try { return localStorage.getItem('clinic_token'); } catch (e) { return null; }
 }
 
 /* ---------------- ui helpers ---------------- */
@@ -540,6 +583,10 @@ function setChrome({ title, back = false, nav = true, tab = null, actions = '' }
   $('#tabbar').hidden = !nav;
   document.body.classList.toggle('no-nav', !nav);
   $('#top-actions').innerHTML = actions;
+  const t4 = $('#tab4');
+  t4.href = isDoctor() ? '#/accounts' : '#/dues';
+  t4.dataset.tab = isDoctor() ? 'accounts' : 'dues';
+  t4.querySelector('span').textContent = isDoctor() ? 'Accounts' : 'Dues';
   $$('#tabbar a').forEach((a) => a.classList.toggle('active', a.dataset.tab === tab));
 }
 
@@ -630,7 +677,7 @@ async function router() {
       try {
         await fn(query, ...m.slice(1));
       } catch (err) {
-        view.innerHTML = `<div class="card empty">${esc(err.message)}</div>`;
+        if (location.hash !== '#/login') view.innerHTML = `<div class="card empty">${esc(err.message)}</div>`;
       }
       return;
     }
@@ -643,27 +690,87 @@ async function router() {
    ====================================================================== */
 const LOGO = '<svg class="logo" viewBox="0 0 64 64"><rect width="64" height="64" rx="16" fill="#0f766e" stroke="none"/><path d="M22 14c-5 0-8 4-8 9 0 6 3 9 4 14 1 6 2 13 6 13s4-8 8-8 4 8 8 8 5-7 6-13c1-5 4-8 4-14 0-5-3-9-8-9-4 0-6 2-10 2s-6-2-10-2z" fill="#fff" stroke="none"/></svg>';
 
-on(/^\/welcome$/, async () => {
-  const s = state.settings;
-  setChrome({ title: s.clinic_name || 'Dental Clinic', nav: false });
+on(/^\/login$/, async () => {
+  const st = await api('GET', '/api/status');
+  setChrome({ title: st.clinic_name || 'Dental Clinic', nav: false });
+  if (st.setup_required) return renderSetup(st);
+  let role = (() => { try { return localStorage.getItem('clinic_role') || 'doctor'; } catch (e) { return 'doctor'; } })();
   view.innerHTML = `<div class="auth">
     ${LOGO}
-    <h2>Welcome!</h2>
-    <p class="muted">Set up your clinic in 10 seconds. Everything you enter is saved in your Google Sheet.</p>
+    <h2>${esc(st.clinic_name)}</h2>
+    <p class="muted">Who is logging in?</p>
     <form class="form" id="f">
-      <div class="field"><label>Clinic name</label><input name="clinic_name" value="${esc(s.clinic_name)}" required></div>
-      <div class="field"><label>Doctor's name</label><input name="doctor_name" value="${esc(s.doctor_name)}" placeholder="Dr. ..."></div>
-      <div class="field"><label>Clinic phone</label><input name="clinic_phone" type="tel" value="${esc(s.clinic_phone)}"></div>
-      <button class="btn block" type="submit">Start</button>
+      <div class="roles" id="roles">
+        <button type="button" data-role="doctor">${icon('doctor')}<span>Doctor</span></button>
+        <button type="button" data-role="compounder">${icon('assistant')}<span>Compounder</span></button>
+      </div>
+      <div class="field"><input name="password" type="password" placeholder="Password" required autocomplete="current-password"></div>
+      <button class="btn block" type="submit">Log in</button>
     </form></div>`;
+  const mark = () => $$('#roles [data-role]').forEach((b) => b.classList.toggle('on', b.dataset.role === role));
+  mark();
+  $('#roles').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-role]');
+    if (!b) return;
+    role = b.dataset.role;
+    mark();
+    $('#f').elements.password.focus();
+  });
   bindSubmit($('#f'), async (d) => {
-    state.settings = await api('PUT', '/api/settings', { ...d, setup_done: 'yes' });
+    const res = await api('POST', '/api/login', { role, password: d.password });
+    try { localStorage.setItem('clinic_role', role); } catch (e) { /* ignore */ }
+    saveToken(res.token);
+    await loadMe();
     location.replace('#/');
   });
 });
 
-async function loadSettings() {
-  state.settings = await api('GET', '/api/settings');
+function renderSetup(st) {
+  view.innerHTML = `<div class="auth">
+    ${LOGO}
+    <h2>Welcome!</h2>
+    <p class="muted">Set up your clinic once. Everything is saved in your Google Sheet.</p>
+    <form class="form" id="f">
+      <div class="field"><label>Clinic name</label><input name="clinic_name" value="${esc(st.clinic_name)}" required></div>
+      <div class="field"><label>Doctor's name</label><input name="doctor_name" placeholder="Dr. ..."></div>
+      <div class="card" style="background:var(--surface-2)">
+        <div class="field"><label>Doctor's password</label><input name="doctor_password" type="password" minlength="4" required autocomplete="new-password"></div>
+        <div class="field" style="margin:0"><label>Compounder's password</label><input name="compounder_password" type="password" minlength="4" required autocomplete="new-password"></div>
+      </div>
+      <div class="field"><label>Doctor's email <span class="muted small">(for reminders)</span></label><input name="doctor_email" type="email" placeholder="you@gmail.com"></div>
+      <div class="field"><label>Compounder's email <span class="muted small">(for reminders)</span></label><input name="compounder_email" type="email"></div>
+      <button class="btn block" type="submit">Start</button>
+    </form></div>`;
+  bindSubmit($('#f'), async (d) => {
+    const res = await api('POST', '/api/setup', d);
+    saveToken(res.token);
+    await loadMe();
+    location.replace('#/');
+  });
+}
+
+async function loadMe() {
+  const me = await api('GET', '/api/me');
+  state.role = me.role;
+  state.settings = me.settings;
+}
+
+/** Events for the "which event?" pickers, cached until an event changes. */
+async function eventOptions() {
+  if (!state.events) state.events = await api('GET', '/api/events/options');
+  return state.events;
+}
+function eventSelect(events, selected) {
+  if (!events.length) return '';
+  return `<div class="field"><label>Event / camp</label><select name="event_id">
+    <option value="">Regular clinic (not an event)</option>
+    ${events.map((e) => `<option value="${e.id}"${Number(selected) === e.id ? ' selected' : ''}>${esc(e.name)} · ${fmtDate(e.date, { noYear: true })}</option>`).join('')}
+  </select></div>`;
+}
+/** The event running on a given day (so visits at a camp are tagged automatically). */
+function eventOn(events, day) {
+  const e = events.find((x) => x.date <= day && (x.end_date || x.date) >= day);
+  return e ? e.id : '';
 }
 
 /* ======================================================================
@@ -675,15 +782,17 @@ on(/^\/$/, async () => {
   const d = await api('GET', '/api/dashboard');
   const hr = new Date().getHours();
   const greet = hr < 12 ? 'Good morning' : hr < 17 ? 'Good afternoon' : 'Good evening';
-  const doc = state.settings.doctor_name ? `, ${state.settings.doctor_name}` : '';
+  const doc = isDoctor() ? (state.settings.doctor_name ? `, ${state.settings.doctor_name}` : '') : '';
   const upcoming = d.appointments_today.filter((a) => a.status === 'scheduled').length;
 
   view.innerHTML = `
     <div class="muted small" style="margin:2px 4px 10px">${greet}${esc(doc)} · ${fmtDate(d.today, { weekday: true })}</div>
     <div class="stats">
-      <a class="stat accent" href="#/reports"><div class="label">Collected today</div><div class="value">${money(d.collected_today)}</div></a>
+      <a class="stat accent" href="${isDoctor() ? '#/reports' : '#/dues'}"><div class="label">Collected today</div><div class="value">${money(d.collected_today)}</div></a>
       <a class="stat ${d.outstanding > 0 ? 'danger' : ''}" href="#/dues"><div class="label">Total dues (${d.patients_with_dues})</div><div class="value">${money(d.outstanding)}</div></a>
-      <a class="stat" href="#/reports"><div class="label">This month</div><div class="value">${money(d.collected_month)}</div></a>
+      ${isDoctor()
+        ? `<a class="stat" href="#/accounts"><div class="label">Profit this month</div><div class="value" style="color:${d.month_profit < 0 ? 'var(--danger)' : 'var(--ok)'}">${money(d.month_profit)}</div></a>`
+        : `<a class="stat" href="#/appointments"><div class="label">Appointments tomorrow</div><div class="value">${d.appointments_tomorrow}</div></a>`}
       <a class="stat" href="#/patients"><div class="label">Patients</div><div class="value">${d.patients}</div></a>
     </div>
 
@@ -692,6 +801,11 @@ on(/^\/$/, async () => {
       <a href="#/pick?for=visit"><span class="ic">${icon('tooth')}</span>Add visit</a>
       <a href="#/pick?for=pay"><span class="ic">${icon('cash')}</span>Receive payment</a>
       <a href="#/appointments/new"><span class="ic">${icon('calPlus')}</span>Book appt.</a>
+      ${isDoctor() ? `
+      <a href="#/expenses/new"><span class="ic">${icon('receipt')}</span>Add expense</a>
+      <a href="#/income/new"><span class="ic">${icon('wallet')}</span>Other income</a>
+      <a href="#/events"><span class="ic">${icon('flag')}</span>Events</a>
+      <a href="#/accounts"><span class="ic">${icon('trend')}</span>Profit</a>` : ''}
     </div>
 
     <div class="section-title"><span>Today's appointments ${upcoming ? `<span class="badge info">${upcoming}</span>` : ''}</span><a href="#/appointments">See all</a></div>
@@ -860,13 +974,13 @@ on(/^\/patients\/(\d+)\/edit$/, async (_q, id) => {
   setChrome({ title: 'Edit patient', back: true, nav: false });
   spinner();
   const { patient } = await api('GET', `/api/patients/${id}`);
-  view.innerHTML = patientForm(patient) + `<button class="btn danger block mt" id="del">${icon('trash')} Delete patient</button>`;
+  view.innerHTML = patientForm(patient) + (isDoctor() ? `<button class="btn danger block mt" id="del">${icon('trash')} Delete patient</button>` : '');
   bindSubmit($('#f'), async (d) => {
     await api('PUT', `/api/patients/${id}`, d);
     toast('Saved');
     goBack(`#/patients/${id}`);
   });
-  $('#del').addEventListener('click', () => act(async () => {
+  $('#del')?.addEventListener('click', () => act(async () => {
     if (!await askConfirm(`Delete ${patient.name} and ALL their visits, payments and appointments? This cannot be undone.`)) return;
     await api('DELETE', `/api/patients/${id}`);
     toast('Patient deleted');
@@ -929,9 +1043,12 @@ on(/^\/patients\/(\d+)$/, async (_q, id) => {
         ...payments.map((x) => ({ kind: 'pay', date: x.date, key: x.created_at, x })),
       ].sort((a, b) => b.date.localeCompare(a.date) || b.key.localeCompare(a.key));
       if (!items.length) return `<div class="card empty">No visits yet.<br><br><a class="btn" href="#/patients/${id}/visits/new">Add first visit</a></div>`;
+      const open = (href) => (isDoctor() ? `<a class="card" style="display:block;color:inherit" href="${href}">` : '<div class="card">');
+      const close = isDoctor() ? '</a>' : '</div>';
+      const evTag = (r) => (r.event_name ? ` · <span class="badge info">${esc(r.event_name)}</span>` : '');
       return `<div class="tl">${items.map((it) => it.kind === 'visit' ? `
-        <div class="tl-item"><a class="card" style="display:block;color:inherit" href="#/patients/${id}/visits/${it.v.id}">
-          <div class="row"><div class="grow"><b>${esc(it.v.treatment || 'Visit')}</b><div class="muted small">${fmtDate(it.v.date, { weekday: true })}</div></div>
+        <div class="tl-item">${open(`#/patients/${id}/visits/${it.v.id}`)}
+          <div class="row"><div class="grow"><b>${esc(it.v.treatment || 'Visit')}</b><div class="muted small">${fmtDate(it.v.date, { weekday: true })}${evTag(it.v)}</div></div>
           ${it.v.fee ? `<span class="badge grey">${money(it.v.fee)}</span>` : ''}</div>
           <dl class="kv">
             ${it.v.teeth ? `<dt>Teeth</dt><dd>${esc(it.v.teeth)}</dd>` : ''}
@@ -939,10 +1056,10 @@ on(/^\/patients\/(\d+)$/, async (_q, id) => {
             ${it.v.diagnosis ? `<dt>Diagnosis</dt><dd>${esc(it.v.diagnosis)}</dd>` : ''}
             ${it.v.notes ? `<dt>Notes</dt><dd>${esc(it.v.notes)}</dd>` : ''}
             ${it.v.next_visit ? `<dt>Next visit</dt><dd>${fmtDate(it.v.next_visit)}</dd>` : ''}
-          </dl></a></div>` : `
-        <div class="tl-item pay"><a class="card" style="display:block;color:inherit" href="#/patients/${id}/payments/${it.x.id}">
-          <div class="row"><div class="grow"><b style="color:var(--ok)">Payment received</b><div class="muted small">${fmtDate(it.x.date, { weekday: true })} · ${esc(it.x.method)}${it.x.note ? ' · ' + esc(it.x.note) : ''}</div></div>
-          <span class="badge ok">${money(it.x.amount)}</span></div></a></div>`).join('')}</div>`;
+          </dl>${close}</div>` : `
+        <div class="tl-item pay">${open(`#/patients/${id}/payments/${it.x.id}`)}
+          <div class="row"><div class="grow"><b style="color:var(--ok)">Payment received</b><div class="muted small">${fmtDate(it.x.date, { weekday: true })} · ${esc(it.x.method)}${it.x.note ? ' · ' + esc(it.x.note) : ''}${evTag(it.x)}</div></div>
+          <span class="badge ok">${money(it.x.amount)}</span></div>${close}</div>`).join('')}</div>`;
     },
     info: () => `<div class="card"><dl class="kv" style="margin:0">
         <dt>Allergies</dt><dd>${esc(p.allergies) || '<span class="muted">None recorded</span>'}</dd>
@@ -985,8 +1102,8 @@ on(/^\/patients\/(\d+)\/visits\/(new|\d+)$/, async (_q, id, vid) => {
   const isNew = vid === 'new';
   setChrome({ title: isNew ? 'Add visit' : 'Edit visit', back: true, nav: false });
   spinner();
-  const { patient: p, visits, account } = await api('GET', `/api/patients/${id}`);
-  const v = isNew ? { date: todayStr() } : visits.find((x) => x.id === Number(vid));
+  const [{ patient: p, visits, account }, events] = await Promise.all([api('GET', `/api/patients/${id}`), eventOptions()]);
+  const v = isNew ? { date: todayStr(), event_id: eventOn(events, todayStr()) } : visits.find((x) => x.id === Number(vid));
   if (!v) throw new Error('Visit not found');
   const teeth = (v.teeth || '').split(/[,\s]+/).filter(Boolean);
 
@@ -995,6 +1112,7 @@ on(/^\/patients\/(\d+)\/visits\/(new|\d+)$/, async (_q, id, vid) => {
     ${p.allergies ? `<div class="alert" style="margin:0 0 12px">${icon('alert')}<div>Allergies: ${esc(p.allergies)}</div></div>` : ''}
     <form class="form" id="f">
       <div class="field"><label>Date</label><input name="date" type="date" value="${esc(v.date)}" required></div>
+      ${eventSelect(events, v.event_id)}
       <div class="field"><label>Chief complaint</label><input name="complaint" value="${esc(v.complaint)}" placeholder="e.g. Pain in lower left tooth"></div>
       <div class="field"><label>Teeth <span class="muted small">(tap to select)</span></label>
         ${toothChart(teeth)}
@@ -1075,8 +1193,8 @@ on(/^\/patients\/(\d+)\/payments\/(new|\d+)$/, async (_q, id, payId) => {
   const isNew = payId === 'new';
   setChrome({ title: isNew ? 'Receive payment' : 'Edit payment', back: true, nav: false });
   spinner();
-  const { patient: p, payments, account } = await api('GET', `/api/patients/${id}`);
-  const x = isNew ? { date: todayStr(), method: 'Cash' } : payments.find((y) => y.id === Number(payId));
+  const [{ patient: p, payments, account }, events] = await Promise.all([api('GET', `/api/patients/${id}`), eventOptions()]);
+  const x = isNew ? { date: todayStr(), method: 'Cash', event_id: eventOn(events, todayStr()) } : payments.find((y) => y.id === Number(payId));
   if (!x) throw new Error('Payment not found');
 
   view.innerHTML = `
@@ -1092,6 +1210,7 @@ on(/^\/patients\/(\d+)\/payments\/(new|\d+)$/, async (_q, id, payId) => {
       </div>
       <div class="field"><label>Mode</label>${chipGroup('method', PAY_METHODS, x.method)}</div>
       <div class="field"><label>Date</label><input name="date" type="date" value="${esc(x.date)}" required></div>
+      ${eventSelect(events, x.event_id)}
       <div class="field"><label>Note</label><input name="note" value="${esc(x.note)}" placeholder="e.g. UPI ref no., advance for crown"></div>
       <button class="btn block" type="submit">${isNew ? 'Save payment' : 'Save changes'}</button>
     </form>
@@ -1260,8 +1379,8 @@ async function findAppointment(id) {
    Dues (accounts receivable)
    ====================================================================== */
 on(/^\/dues$/, async () => {
-  setChrome({ title: 'Dues (Receivables)', tab: 'dues', actions: `<button class="icon-btn" id="tosheet" aria-label="Save dues report to Google Sheet">${icon('sheet')}</button>` });
-  $('#tosheet').addEventListener('click', saveDuesToSheet);
+  setChrome({ title: 'Dues (Receivables)', tab: isDoctor() ? 'accounts' : 'dues', back: isDoctor(), actions: isDoctor() ? `<button class="icon-btn" id="tosheet" aria-label="Save dues report to Google Sheet">${icon('sheet')}</button>` : '' });
+  $('#tosheet')?.addEventListener('click', saveDuesToSheet);
   spinner();
   const ar = await api('GET', '/api/receivables');
   const t = ar.totals;
@@ -1328,26 +1447,111 @@ async function saveDuesToSheet() {
   });
 }
 
+function menuLink(href, ic, title, sub, attrs = '') {
+  return `<a class="item" href="${href}" ${attrs}><div class="avatar">${icon(ic)}</div><div class="grow"><div class="title">${title}</div>${sub ? `<div class="sub">${sub}</div>` : ''}</div>${icon('chevron')}</a>`;
+}
+
 on(/^\/more$/, async () => {
   setChrome({ title: 'More', tab: 'more' });
-  const link = (href, ic, title, sub, attrs = '') => `<a class="item" href="${href}" ${attrs}><div class="avatar">${icon(ic)}</div><div class="grow"><div class="title">${title}</div>${sub ? `<div class="sub">${sub}</div>` : ''}</div>${icon('chevron')}</a>`;
-  view.innerHTML = `
+  const who = `<div class="card row"><div class="avatar">${icon(isDoctor() ? 'doctor' : 'assistant')}</div>
+    <div class="grow"><div class="title">Logged in as ${isDoctor() ? 'Doctor' : 'Compounder'}</div><div class="sub">${esc(state.settings.clinic_name)}</div></div>
+    <button class="btn secondary sm" id="logout">${icon('logout')} Log out</button></div>`;
+  view.innerHTML = who + (isDoctor() ? `
+    <div class="section-title"><span>Accounts</span></div>
     <div class="list">
-      ${link('#/reports', 'chart', 'Reports', 'Collections, billing, payment modes')}
-      ${link('#/settings', 'gear', 'Clinic settings', 'Name, address, currency, reminder message')}
+      ${menuLink('#/accounts', 'trend', 'Profit & loss', 'Regular clinic vs. events')}
+      ${menuLink('#/events', 'flag', 'Events & camps', 'Profit of each event')}
+      ${menuLink('#/expenses', 'receipt', 'Expenses', 'Rent, salary, materials, camp costs…')}
+      ${menuLink('#/income', 'wallet', 'Other income', 'Sponsorships, camp fees, product sales')}
+      ${menuLink('#/dues', 'cash', 'Dues (receivables)', 'Who owes how much')}
+      ${menuLink('#/reports', 'chart', 'Patient collections report', 'Billing, payment modes, top treatments')}
+    </div>
+    <div class="section-title"><span>Setup</span></div>
+    <div class="list">
+      ${menuLink('#/staff', 'bell', 'Logins & reminders', 'Passwords, phone & email reminders')}
+      ${menuLink('#/settings', 'gear', 'Clinic details', 'Name, address, currency, messages')}
     </div>
     <div class="section-title"><span>Your data (Google Sheets)</span></div>
     <div class="list">
-      ${link(esc(state.settings.spreadsheet_url || '#'), 'sheet', 'Open the Google Sheet', 'All patients, visits, payments and appointments', 'target="_blank" rel="noopener"')}
+      ${menuLink(esc(state.settings.spreadsheet_url || '#'), 'sheet', 'Open the Google Sheet', 'Every patient, visit, payment, expense…', 'target="_blank" rel="noopener"')}
       <button class="item" id="dues-sheet" style="width:100%;border-left:0;border-right:0;border-top:0;background:none;font:inherit;text-align:left;cursor:pointer"><div class="avatar">${icon('download')}</div><div class="grow"><div class="title">Save dues report to the sheet</div><div class="sub">Writes the current dues list into a “Dues Report” tab</div></div></button>
     </div>
-    <p class="muted small center mt">Google keeps your data safe and keeps version history.<br>In the sheet use File → Download → Excel for an offline copy.</p>
-    <p class="muted small center">Tip: open this app in Chrome/Safari and choose “Add to Home Screen” to open it like an app.</p>`;
-  $('#dues-sheet').addEventListener('click', saveDuesToSheet);
+    <p class="muted small center mt">Google keeps your data safe with version history.<br>In the sheet use File → Download → Excel for an offline copy.</p>` : `
+    <div class="list">
+      ${menuLink('#/dues', 'cash', 'Dues (receivables)', 'Collect pending payments')}
+      ${menuLink('#/appointments', 'cal', 'Appointments', 'Book and manage appointments')}
+    </div>`) + `
+    <p class="muted small center">Tip: open this app in Chrome/Safari and choose “Add to Home Screen” to use it like an app.</p>`;
+  $('#dues-sheet')?.addEventListener('click', saveDuesToSheet);
+  $('#logout').addEventListener('click', () => act(async () => {
+    await api('POST', '/api/logout', {});
+    saveToken(null);
+    state.events = null;
+    location.hash = '#/login';
+  }));
 });
 
-on(/^\/reports$/, async (q) => {
-  setChrome({ title: 'Reports', back: true, tab: 'more' });
+/* ---------------- logins & reminders (doctor) ---------------- */
+on(/^\/staff$/, async () => {
+  setChrome({ title: 'Logins & reminders', back: true, nav: false });
+  spinner();
+  const st = await api('GET', '/api/reminders/status');
+  const s = state.settings;
+  const yes = (k) => (s[k] === 'yes' ? 'checked' : '');
+  const ok = (good, text) => `<div class="row small" style="margin:4px 0"><span class="badge ${good ? 'ok' : 'warn'}">${good ? 'On' : 'Off'}</span>${text}</div>`;
+  view.innerHTML = `
+    <div class="card">
+      <h2>Reminder status</h2>
+      ${ok(!!st.calendar, st.calendar ? `Appointments go to the “${esc(st.calendar)}” Google Calendar` : 'Google Calendar not connected yet (it connects on the next booking)')}
+      ${ok(st.daily_trigger, st.daily_trigger ? 'Morning email with the day’s appointments (7 am)' : 'Morning email not scheduled — run <b>setup</b> once in the Apps Script editor')}
+      ${ok(st.staff_emails.length > 0, st.staff_emails.length ? `Reminders go to ${st.staff_emails.map(esc).join(', ')}` : 'Add email addresses below')}
+      <button class="btn secondary sm mt" id="test">${icon('bell')} Send me a test reminder now</button>
+    </div>
+    <form class="form card" id="rf">
+      <h2>Reminders</h2>
+      <div class="field"><label>Doctor's email</label><input name="doctor_email" type="email" value="${esc(s.doctor_email)}"></div>
+      <div class="field"><label>Compounder's email</label><input name="compounder_email" type="email" value="${esc(s.compounder_email)}"></div>
+      <label class="check field"><input type="checkbox" name="calendar_sync" ${yes('calendar_sync')}> Put appointments on Google Calendar (phone pop-up alerts)</label>
+      <div class="grid2">
+        <div class="field"><label>Alert before (minutes)</label><input name="reminder_minutes" type="number" inputmode="numeric" min="0" max="1440" value="${esc(s.reminder_minutes)}"></div>
+        <div class="field"><label>Appointment length (min)</label><input name="appt_duration" type="number" inputmode="numeric" min="5" max="480" value="${esc(s.appt_duration)}"></div>
+      </div>
+      <label class="check field"><input type="checkbox" name="daily_digest" ${yes('daily_digest')}> Email us today's appointment list every morning</label>
+      <label class="check field"><input type="checkbox" name="patient_email_reminders" ${yes('patient_email_reminders')}> Email patients a reminder the day before (if their email is saved)</label>
+      <button class="btn block" type="submit">Save reminder settings</button>
+      <p class="muted small">Phone alerts: install the Google Calendar app on the doctor’s phone. The compounder receives each appointment as a calendar invite on their own Google account.</p>
+    </form>
+    <form class="form card" id="pf">
+      <h2>Change a password</h2>
+      <div class="field"><label>Whose password?</label>${chipGroup('role', ['compounder', 'doctor'], 'compounder')}</div>
+      <div class="field"><label>New password</label><input name="password" type="password" minlength="4" required autocomplete="new-password"></div>
+      <div class="field"><label>Your (doctor) current password</label><input name="current" type="password" required autocomplete="current-password"></div>
+      <button class="btn secondary block" type="submit">${icon('lock')} Change password</button>
+      <p class="muted small">The person is logged out on all their devices and must log in with the new password.</p>
+    </form>`;
+  wireChipGroups($('#pf'));
+  bindSubmit($('#rf'), async (d) => {
+    ['calendar_sync', 'daily_digest', 'patient_email_reminders'].forEach((k) => { d[k] = d[k] ? 'yes' : 'no'; });
+    state.settings = await api('PUT', '/api/settings', d);
+    toast('Reminder settings saved');
+  });
+  bindSubmit($('#pf'), async (d) => {
+    await api('POST', '/api/passwords', d);
+    $('#pf').reset();
+    toast(`${d.role === 'doctor' ? 'Doctor' : 'Compounder'} password changed`);
+  });
+  $('#test').addEventListener('click', () => act(async () => {
+    const r = await api('POST', '/api/reminders/test', {});
+    toast(r.message);
+  }));
+});
+
+/* ======================================================================
+   Accounts: profit & loss, events, expenses, other income (doctor)
+   ====================================================================== */
+const PERIODS = [['month', 'This month'], ['last_month', 'Last month'], ['quarter', '3 months'], ['year', 'This year'], ['all', 'All time']];
+
+function period(q, fallback = 'month') {
   const t = todayStr();
   const monthStart = t.slice(0, 8) + '01';
   const lastMonthEnd = addDays(monthStart, -1);
@@ -1356,18 +1560,259 @@ on(/^\/reports$/, async (q) => {
     week: [addDays(t, -6), t],
     month: [monthStart, t],
     last_month: [lastMonthEnd.slice(0, 8) + '01', lastMonthEnd],
+    quarter: [addDays(t, -90), t],
     year: [`${t.slice(0, 4)}-01-01`, t],
+    all: ['2000-01-01', addDays(t, 365)],
   };
-  const preset = q.get('p') || (q.get('from') ? 'custom' : 'month');
+  const preset = q.get('p') || (q.get('from') ? 'custom' : fallback);
   const [from, to] = presets[preset] || [q.get('from') || monthStart, q.get('to') || t];
+  return { preset, from, to };
+}
+
+function periodPicker(base, per, options = PERIODS) {
+  return `<div class="chips scroll" data-period="${base}">${options.map(([k, l]) => `<button class="chip${per.preset === k ? ' on' : ''}" data-p="${k}">${l}</button>`).join('')}</div>
+    <form class="grid2 mt" data-range="${base}" style="align-items:end">
+      <div><label class="label-txt">From</label><input type="date" name="from" value="${per.preset === 'all' ? '' : per.from}"></div>
+      <div><label class="label-txt">To</label><input type="date" name="to" value="${per.preset === 'all' ? '' : per.to}"></div>
+    </form>`;
+}
+
+function wirePeriod(root = view) {
+  $$('[data-period]', root).forEach((g) => g.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-p]');
+    if (b) location.replace(`#${g.dataset.period}?p=${b.dataset.p}`);
+  }));
+  $$('[data-range]', root).forEach((f) => f.addEventListener('change', () => {
+    const d = formData(f);
+    if (d.from && d.to) location.replace(`#${f.dataset.range}?from=${d.from}&to=${d.to}`);
+  }));
+}
+
+const plColor = (n) => (n < 0 ? 'var(--danger)' : 'var(--ok)');
+const periodLabel = (per) => (per.preset === 'all' ? 'All time' : `${fmtDate(per.from)} – ${fmtDate(per.to)}`);
+
+function plCard(title, b, extra = '') {
+  return `<div class="card">
+    <h2>${title}</h2>
+    <table class="tbl">
+      <tr><td>Patient payments</td><td class="num">${money(b.patient_income)}</td></tr>
+      <tr><td>Other income</td><td class="num">${money(b.other_income)}</td></tr>
+      <tr><td><b>Total income</b></td><td class="num"><b>${money(b.income)}</b></td></tr>
+      <tr><td>Expenses</td><td class="num">− ${money(b.expenses)}</td></tr>
+      <tr><td><b>Profit</b></td><td class="num"><b style="color:${plColor(b.profit)};font-size:17px">${money(b.profit)}</b></td></tr>
+    </table>${extra}
+  </div>`;
+}
+
+function eventRow(e) {
+  return `<a class="item" href="#/events/${e.id}">
+    <div class="avatar">${icon('flag')}</div>
+    <div class="grow"><div class="title ellipsis">${esc(e.name)}</div>
+      <div class="sub ellipsis">${fmtDate(e.date)}${e.location ? ' · ' + esc(e.location) : ''} · ${e.patients_seen} patient${e.patients_seen === 1 ? '' : 's'}</div></div>
+    <div class="right"><div class="nowrap" style="font-weight:750;color:${plColor(e.profit)}">${money(e.profit)}</div>
+      <div class="small muted nowrap">${e.margin === null ? 'no income' : e.margin + '% margin'}</div></div>
+  </a>`;
+}
+
+on(/^\/accounts$/, async (q) => {
+  setChrome({ title: 'Accounts', tab: 'accounts' });
+  const per = period(q);
   spinner();
-  const r = await api('GET', `/api/reports?from=${from}&to=${to}`);
+  const r = await api('GET', `/api/profitability?from=${per.from}&to=${per.to}`);
   view.innerHTML = `
-    <div class="chips scroll" id="rp">${[['today', 'Today'], ['week', '7 days'], ['month', 'This month'], ['last_month', 'Last month'], ['year', 'This year']].map(([k, l]) => `<button class="chip${preset === k ? ' on' : ''}" data-p="${k}">${l}</button>`).join('')}</div>
-    <form class="grid2 mt" id="rf" style="align-items:end">
-      <div><label class="label-txt">From</label><input type="date" name="from" value="${from}"></div>
-      <div><label class="label-txt">To</label><input type="date" name="to" value="${to}"></div>
-    </form>
+    ${periodPicker('/accounts', per)}
+    <div class="card mt">
+      <div class="muted small" style="font-weight:600">Net profit · ${periodLabel(per)}</div>
+      <div style="font-size:30px;font-weight:800;color:${plColor(r.total.profit)}">${money(r.total.profit)}</div>
+      <div class="account mt" style="margin-bottom:0">
+        <div><div class="v" style="color:var(--ok)">${money(r.total.income)}</div><div class="l">Income</div></div>
+        <div><div class="v" style="color:var(--danger)">${money(r.total.expenses)}</div><div class="l">Expenses</div></div>
+        <div><div class="v">${r.total.income > 0 ? Math.round((r.total.profit / r.total.income) * 100) + '%' : '—'}</div><div class="l">Margin</div></div>
+      </div>
+    </div>
+    <div class="btn-row" style="margin-bottom:12px">
+      <a class="btn" href="#/expenses/new">${icon('receipt')} Expense</a>
+      <a class="btn secondary" href="#/income/new">${icon('wallet')} Income</a>
+      <a class="btn secondary" href="#/events/new">${icon('flag')} Event</a>
+    </div>
+    ${plCard('Regular clinic (patient check-ups)', r.regular, r.expense_by_category.length ? `
+      <div class="small muted mt" style="font-weight:600">Where the money went</div>
+      <table class="tbl">${r.expense_by_category.map((c) => `<tr><td>${esc(c.category)}</td><td class="num">${money(c.total)}</td></tr>`).join('')}</table>` : '')}
+    ${plCard('Events & camps', r.events)}
+    <div class="section-title"><span>Event profitability</span><a href="#/events">All events</a></div>
+    ${r.event_list.length ? `<div class="list">${r.event_list.map(eventRow).join('')}</div>
+      <p class="muted small" style="margin:6px 4px">Each event shows its full result (all its income and expenses).</p>`
+      : `<div class="card empty">No events in this period.<br><br><a class="btn secondary" href="#/events/new">Add an event or camp</a></div>`}
+    <div class="list mt">
+      ${menuLink(`#/expenses?from=${per.from}&to=${per.to}`, 'receipt', 'All expenses in this period')}
+      ${menuLink(`#/income?from=${per.from}&to=${per.to}`, 'wallet', 'Other income in this period')}
+      ${menuLink('#/dues', 'cash', 'Dues (receivables)')}
+    </div>`;
+  wirePeriod();
+});
+
+/* ---------------- events ---------------- */
+on(/^\/events$/, async () => {
+  setChrome({ title: 'Events & camps', back: true, tab: 'accounts' });
+  spinner();
+  const list = await api('GET', '/api/events');
+  const total = list.reduce((s, e) => s + e.profit, 0);
+  view.innerHTML = list.length ? `
+    <div class="card row"><div class="grow"><div class="muted small" style="font-weight:600">All events together</div>
+      <div style="font-size:24px;font-weight:800;color:${plColor(total)}">${money(total)}</div></div>
+      <div class="muted small right">${list.length} event${list.length === 1 ? '' : 's'}</div></div>
+    <div class="list">${list.map(eventRow).join('')}</div>
+    <a class="fab" href="#/events/new" aria-label="New event">${icon('plus')}</a>`
+    : `<div class="card empty">Track dental camps, school check-ups and other events here — see exactly how much each one earned or cost.<br><br><a class="btn" href="#/events/new">Add your first event</a></div>`;
+});
+
+on(/^\/events\/(new|\d+)\/?(edit)?$/, async (_q, eid, edit) => {
+  const isNew = eid === 'new';
+  if (!isNew && !edit) return showEvent(eid);
+  setChrome({ title: isNew ? 'New event' : 'Edit event', back: true, nav: false });
+  let e = { date: todayStr(), type: 'Dental camp' };
+  if (!isNew) e = (await api('GET', `/api/events/${eid}`)).event;
+  view.innerHTML = `<form class="form" id="f">
+    <div class="field"><label>Event name *</label><input name="name" value="${esc(e.name)}" required placeholder="e.g. Free dental camp – Rotary Club"></div>
+    <div class="field"><label>Type</label>${chipGroup('type', EVENT_TYPES, e.type)}</div>
+    <div class="grid2">
+      <div class="field"><label>Date</label><input name="date" type="date" value="${esc(e.date)}" required></div>
+      <div class="field"><label>Last day <span class="muted small">(optional)</span></label><input name="end_date" type="date" value="${esc(e.end_date)}"></div>
+    </div>
+    <div class="field"><label>Location</label><input name="location" value="${esc(e.location)}"></div>
+    <div class="field"><label>Notes</label><textarea name="notes">${esc(e.notes)}</textarea></div>
+    <button class="btn block" type="submit">Save event</button>
+  </form>
+  ${isNew ? '<p class="muted small">Visits and payments recorded on the event days are tagged to it automatically (you can change it on each form).</p>' : `<button class="btn danger block mt" id="del">${icon('trash')} Delete event</button>`}`;
+  wireChipGroups($('#f'));
+  bindSubmit($('#f'), async (d) => {
+    const saved = isNew ? await api('POST', '/api/events', d) : await api('PUT', `/api/events/${eid}`, d);
+    state.events = null;
+    toast('Event saved');
+    location.replace(`#/events/${saved.id}`);
+  });
+  $('#del')?.addEventListener('click', () => act(async () => {
+    if (!await askConfirm('Delete this event? Its expenses, income and patient payments are kept and become regular clinic records.')) return;
+    await api('DELETE', `/api/events/${eid}`);
+    state.events = null;
+    toast('Event deleted');
+    location.replace('#/events');
+  }));
+});
+
+async function showEvent(eid) {
+  setChrome({ title: 'Event', back: true, tab: 'accounts', actions: `<a class="icon-btn" href="#/events/${eid}/edit" aria-label="Edit event">${icon('edit')}</a>` });
+  spinner();
+  const d = await api('GET', `/api/events/${eid}`);
+  const e = d.event;
+  setChrome({ title: e.name, back: true, tab: 'accounts', actions: `<a class="icon-btn" href="#/events/${eid}/edit" aria-label="Edit event">${icon('edit')}</a>` });
+  const pending = Math.max(0, e.billed - e.patient_income);
+  const ledgerItem = (kind, x) => `<a class="item" href="#/${kind}/${x.id}">
+    <div class="grow"><div class="title ellipsis">${esc(x.category)}${x.description ? ' · ' + esc(x.description) : ''}</div>
+    <div class="sub">${fmtDate(x.date)}${x.paid_to ? ' · ' + esc(x.paid_to) : ''}${x.received_from ? ' · ' + esc(x.received_from) : ''}</div></div>
+    <div class="nowrap" style="font-weight:700;color:${kind === 'expenses' ? 'var(--danger)' : 'var(--ok)'}">${money(x.amount)}</div></a>`;
+  view.innerHTML = `
+    <div class="card">
+      <div class="muted small">${esc(e.type)} · ${fmtDate(e.date)}${e.end_date && e.end_date !== e.date ? ' – ' + fmtDate(e.end_date) : ''}${e.location ? ' · ' + esc(e.location) : ''}</div>
+      <div class="muted small" style="font-weight:600;margin-top:8px">Event profit</div>
+      <div style="font-size:30px;font-weight:800;color:${plColor(e.profit)}">${money(e.profit)}</div>
+      <div class="muted small">${e.margin === null ? 'No income recorded yet' : `${e.margin}% margin`} · ${e.patients_seen} patient${e.patients_seen === 1 ? '' : 's'} seen</div>
+      ${e.notes ? `<p class="small pre">${esc(e.notes)}</p>` : ''}
+    </div>
+    ${plCard('Income & expenses', e, pending > 0 ? `<div class="alert" style="background:var(--warn-soft);color:var(--warn)">${icon('alert')}<div>${money(pending)} still to be collected from event patients</div></div>` : '')}
+    <div class="btn-row" style="margin-bottom:12px">
+      <a class="btn" href="#/expenses/new?event=${e.id}">${icon('receipt')} Add expense</a>
+      <a class="btn secondary" href="#/income/new?event=${e.id}">${icon('wallet')} Add income</a>
+    </div>
+    <div class="section-title"><span>Expenses (${d.expenses.length})</span></div>
+    ${d.expenses.length ? `<div class="card" style="padding:10px 14px"><table class="tbl">${d.expense_by_category.map((c) => `<tr><td>${esc(c.category)}</td><td class="num">${money(c.total)}</td></tr>`).join('')}</table></div>
+      <div class="list">${d.expenses.map((x) => ledgerItem('expenses', x)).join('')}</div>` : '<div class="card empty">No expenses recorded for this event.</div>'}
+    <div class="section-title"><span>Other income (${d.income.length})</span></div>
+    ${d.income.length ? `<div class="list">${d.income.map((x) => ledgerItem('income', x)).join('')}</div>` : '<div class="card empty">No sponsorship or other income recorded.</div>'}
+    <div class="section-title"><span>Patients seen (${d.visits.length} visits)</span></div>
+    ${d.visits.length ? `<div class="list">${d.visits.map((v) => `<a class="item" href="#/patients/${v.patient_id}">
+      <div class="avatar">${esc(initials(v.patient_name))}</div>
+      <div class="grow"><div class="title ellipsis">${esc(v.patient_name)}</div><div class="sub ellipsis">${esc(v.treatment || 'Visit')}</div></div>
+      ${v.fee ? `<span class="badge grey">${money(v.fee)}</span>` : ''}</a>`).join('')}</div>`
+      : '<div class="card empty">Visits added on the event days (or tagged with this event) show up here.</div>'}
+    ${d.payments.length ? `<div class="section-title"><span>Patient payments</span></div>
+      <div class="list">${d.payments.map((x) => `<a class="item" href="#/patients/${x.patient_id}"><div class="grow"><div class="title ellipsis">${esc(x.patient_name)}</div><div class="sub">${fmtDate(x.date)} · ${esc(x.method)}</div></div><span class="badge ok">${money(x.amount)}</span></a>`).join('')}</div>` : ''}`;
+}
+
+/* ---------------- expenses & other income ---------------- */
+const LEDGERS = {
+  expenses: { title: 'Expenses', one: 'expense', categories: EXPENSE_CATEGORIES, party: 'paid_to', partyLabel: 'Paid to', color: 'var(--danger)', ic: 'receipt' },
+  income: { title: 'Other income', one: 'income', categories: INCOME_CATEGORIES, party: 'received_from', partyLabel: 'Received from', color: 'var(--ok)', ic: 'wallet' },
+};
+
+on(/^\/(expenses|income)$/, async (q, kind) => {
+  const L = LEDGERS[kind];
+  setChrome({ title: L.title, back: true, tab: 'accounts' });
+  const per = period(q);
+  const scope = q.get('scope') || 'all';
+  spinner();
+  const r = await api('GET', `/api/${kind}?from=${per.from}&to=${per.to}&scope=${scope}`);
+  const scopeQs = `${per.preset === 'custom' ? `from=${per.from}&to=${per.to}` : `p=${per.preset}`}`;
+  view.innerHTML = `
+    ${periodPicker(`/${kind}`, per)}
+    <div class="chips mt">${[['all', 'Everything'], ['regular', 'Regular clinic'], ['events', 'Events only']].map(([k, l]) => `<a class="chip${scope === k ? ' on' : ''}" href="#/${kind}?${scopeQs}&scope=${k}">${l}</a>`).join('')}</div>
+    <div class="card mt">
+      <div class="muted small" style="font-weight:600">Total · ${periodLabel(per)}</div>
+      <div style="font-size:28px;font-weight:800;color:${L.color}">${money(r.total)}</div>
+      ${r.by_category.length ? `<table class="tbl mt">${r.by_category.map((c) => `<tr><td>${esc(c.category)}</td><td class="num">${money(c.total)}</td></tr>`).join('')}</table>` : ''}
+    </div>
+    ${r.rows.length ? `<div class="list">${r.rows.map((x) => `<a class="item" href="#/${kind}/${x.id}">
+      <div class="grow"><div class="title ellipsis">${esc(x.category)}${x.description ? ' · ' + esc(x.description) : ''}</div>
+      <div class="sub ellipsis">${fmtDate(x.date)}${x[L.party] ? ' · ' + esc(x[L.party]) : ''} · ${esc(x.method)}${x.event_name ? ` · <span class="badge info">${esc(x.event_name)}</span>` : ''}</div></div>
+      <div class="nowrap" style="font-weight:700;color:${L.color}">${money(x.amount)}</div></a>`).join('')}</div>`
+      : `<div class="card empty">Nothing recorded in this period.</div>`}
+    <a class="fab" href="#/${kind}/new" aria-label="Add ${L.one}">${icon('plus')}</a>`;
+  wirePeriod();
+});
+
+on(/^\/(expenses|income)\/(new|\d+)$/, async (q, kind, xid) => {
+  const L = LEDGERS[kind];
+  const isNew = xid === 'new';
+  setChrome({ title: isNew ? `Add ${L.one}` : `Edit ${L.one}`, back: true, nav: false });
+  spinner();
+  const events = await eventOptions();
+  const x = isNew
+    ? { date: todayStr(), category: L.categories[0], method: 'Cash', event_id: q.get('event') || eventOn(events, todayStr()) }
+    : await api('GET', `/api/${kind}/${xid}`);
+  view.innerHTML = `<form class="form" id="f">
+    <div class="field"><label>Amount *</label><div class="money-input"><span>${esc(state.settings.currency || '₹')}</span><input name="amount" type="number" inputmode="decimal" min="0.01" step="0.01" required value="${isNew ? '' : esc(x.amount)}" style="font-size:22px"></div></div>
+    <div class="field"><label>Category</label>${chipGroup('category', L.categories, x.category)}</div>
+    ${events.length ? eventSelect(events, x.event_id) : '<input type="hidden" name="event_id" value="">'}
+    <div class="field"><label>Date</label><input name="date" type="date" value="${esc(x.date)}" required></div>
+    <div class="field"><label>Description</label><input name="description" value="${esc(x.description)}" placeholder="${kind === 'expenses' ? 'e.g. Composite kit, bus hire' : 'e.g. Sponsorship from Rotary Club'}"></div>
+    <div class="field"><label>${L.partyLabel}</label><input name="${L.party}" value="${esc(x[L.party])}"></div>
+    <div class="field"><label>Paid by</label>${chipGroup('method', PAY_METHODS, x.method)}</div>
+    <button class="btn block" type="submit">Save ${L.one}</button>
+  </form>
+  ${isNew ? '' : `<button class="btn danger block mt" id="del">${icon('trash')} Delete ${L.one}</button>`}`;
+  wireChipGroups($('#f'));
+  const back = () => (q.get('event') ? location.replace(`#/events/${q.get('event')}`) : goBack(`#/${kind}`));
+  bindSubmit($('#f'), async (d) => {
+    if (isNew) await api('POST', `/api/${kind}`, d);
+    else await api('PUT', `/api/${kind}/${xid}`, d);
+    toast(`${L.one === 'income' ? 'Income' : 'Expense'} of ${money(d.amount)} saved`);
+    back();
+  });
+  $('#del')?.addEventListener('click', () => act(async () => {
+    if (!await askConfirm(`Delete this ${L.one}?`)) return;
+    await api('DELETE', `/api/${kind}/${xid}`);
+    toast('Deleted');
+    goBack(`#/${kind}`);
+  }));
+});
+
+on(/^\/reports$/, async (q) => {
+  setChrome({ title: 'Collections report', back: true, tab: 'accounts' });
+  const per = period(q);
+  spinner();
+  const r = await api('GET', `/api/reports?from=${per.from}&to=${per.to}`);
+  view.innerHTML = `
+    ${periodPicker('/reports', per, [['today', 'Today'], ['week', '7 days'], ['month', 'This month'], ['last_month', 'Last month'], ['year', 'This year']])}
     <div class="stats mt">
       <div class="stat accent"><div class="label">Collected</div><div class="value">${money(r.collected)}</div></div>
       <div class="stat"><div class="label">Billed</div><div class="value">${money(r.billed)}</div></div>
@@ -1384,16 +1829,12 @@ on(/^\/reports$/, async (q) => {
       ${r.daily.length ? `<div class="table-wrap"><table class="tbl"><tr><th>Date</th><th class="num">Visits</th><th class="num">Billed</th><th class="num">Collected</th></tr>
       ${r.daily.map((d) => `<tr><td class="nowrap">${fmtDate(d.date, { weekday: true })}</td><td class="num">${d.visits}</td><td class="num">${money(d.billed)}</td><td class="num">${money(d.collected)}</td></tr>`).join('')}</table></div>` : '<div class="muted">Nothing recorded in this period.</div>'}
     </div>`;
-  $('#rp').addEventListener('click', (e) => { const b = e.target.closest('[data-p]'); if (b) location.replace(`#/reports?p=${b.dataset.p}`); });
-  $('#rf').addEventListener('change', () => {
-    const d = formData($('#rf'));
-    if (d.from && d.to) location.replace(`#/reports?from=${d.from}&to=${d.to}`);
-  });
+  wirePeriod();
 });
 
 on(/^\/settings$/, async () => {
-  setChrome({ title: 'Clinic settings', back: true, nav: false });
-  await loadSettings();
+  setChrome({ title: 'Clinic details', back: true, nav: false });
+  await loadMe();
   const s = state.settings;
   view.innerHTML = `<form class="form" id="f">
     <div class="field"><label>Clinic name</label><input name="clinic_name" value="${esc(s.clinic_name)}"></div>
@@ -1431,13 +1872,20 @@ view.addEventListener('click', (e) => {
 });
 
 (async function boot() {
-  try {
-    await loadSettings();
-  } catch (e) {
-    view.innerHTML = `<div class="card empty">Cannot open the clinic data.<br>${esc(e.message)}</div>`;
-    return;
+  const token = loadToken();
+  if (token) {
+    state.token = token;
+    try {
+      await loadMe();
+    } catch (e) {
+      if (state.token) {
+        view.innerHTML = `<div class="card empty">Cannot open the clinic data.<br>${esc(e.message)}<br><br><button class="btn" onclick="location.reload()">Try again</button></div>`;
+        return;
+      }
+    }
   }
-  if (state.settings.setup_done !== 'yes') history.replaceState(null, '', '#/welcome');
+  if (!state.role) history.replaceState(null, '', '#/login');
+  else if (location.hash === '#/login') history.replaceState(null, '', '#/');
   router();
 })();
 </script>
